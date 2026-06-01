@@ -3,16 +3,19 @@ import { LangfusePlugin } from "./index";
 
 const mockForceFlush = mock(() => Promise.resolve());
 const mockStart = mock(() => {});
+const mockShutdown = mock(() => Promise.resolve());
+const mockLangfuseSpanProcessor = mock(() => ({
+  forceFlush: mockForceFlush,
+}));
 
 mock.module("@langfuse/otel", () => ({
-  LangfuseSpanProcessor: mock(() => ({
-    forceFlush: mockForceFlush,
-  })),
+  LangfuseSpanProcessor: mockLangfuseSpanProcessor,
 }));
 
 mock.module("@opentelemetry/sdk-node", () => ({
   NodeSDK: mock(() => ({
     start: mockStart,
+    shutdown: mockShutdown,
   })),
 }));
 
@@ -34,12 +37,28 @@ const mockPluginInput = (clientOverrides = {}) =>
     $: {},
   }) as any;
 
+const missingCredentialsMessage =
+  "Missing Langfuse credentials (set plugin publicKey/secretKey or LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY) - tracing disabled";
+const openTelemetryDisabledMessage =
+  "OpenTelemetry experimental feature is disabled in Opencode config - tracing disabled";
+
+const configWithPluginOptions = (
+  options: Record<string, unknown> = {},
+  pluginSpecifier = "opencode-plugin-langfuse"
+) =>
+  ({
+    experimental: { openTelemetry: true },
+    plugin: [[pluginSpecifier, options]],
+  }) as any;
+
 describe("LangfusePlugin", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     mockForceFlush.mockClear();
+    mockLangfuseSpanProcessor.mockClear();
     mockStart.mockClear();
+    mockShutdown.mockClear();
     mockLog.mockClear();
   });
 
@@ -54,19 +73,22 @@ describe("LangfusePlugin", () => {
   };
 
   describe("credentials", () => {
-    it("returns empty hooks when credentials missing", async () => {
+    it("keeps hooks disabled when credentials are missing", async () => {
       delete process.env.LANGFUSE_PUBLIC_KEY;
       delete process.env.LANGFUSE_SECRET_KEY;
 
       const hooks = await LangfusePlugin(mockPluginInput());
 
-      expect(hooks).toEqual({});
+      await hooks.config!(configWithPluginOptions());
+
+      expect(hooks.config).toBeDefined();
+      expect(hooks.event).toBeDefined();
+      expect(mockStart).not.toHaveBeenCalled();
       expect(mockLog).toHaveBeenCalledWith({
         body: {
           service: "langfuse-otel",
           level: "warn",
-          message:
-            "Missing LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY - tracing disabled",
+          message: missingCredentialsMessage,
         },
       });
     });
@@ -75,15 +97,76 @@ describe("LangfusePlugin", () => {
       setupEnv();
       const hooks = await LangfusePlugin(mockPluginInput());
 
+      await hooks.config!({ experimental: { openTelemetry: true } } as any);
+
       expect(hooks.config).toBeDefined();
       expect(hooks.event).toBeDefined();
       expect(mockStart).toHaveBeenCalled();
+      expect(mockLangfuseSpanProcessor).toHaveBeenCalledWith({
+        publicKey: "pk-test",
+        secretKey: "sk-test",
+        baseUrl: "https://cloud.langfuse.com",
+        environment: "development",
+      });
       expect(mockLog).toHaveBeenCalledWith({
         body: {
           service: "langfuse-otel",
           level: "info",
           message: "OTEL tracing initialized → https://cloud.langfuse.com",
         },
+      });
+    });
+
+    it("returns hooks when credentials provided via OpenCode plugin config", async () => {
+      delete process.env.LANGFUSE_PUBLIC_KEY;
+      delete process.env.LANGFUSE_SECRET_KEY;
+
+      const hooks = await LangfusePlugin(mockPluginInput());
+
+      await hooks.config!(
+        configWithPluginOptions({
+          publicKey: "pk-config",
+          secretKey: "sk-config",
+        })
+      );
+
+      expect(hooks.config).toBeDefined();
+      expect(hooks.event).toBeDefined();
+      expect(mockStart).toHaveBeenCalled();
+      expect(mockLangfuseSpanProcessor).toHaveBeenCalledWith({
+        publicKey: "pk-config",
+        secretKey: "sk-config",
+        baseUrl: "https://cloud.langfuse.com",
+        environment: "development",
+      });
+    });
+
+    it("reads plugin config from the langfuse tuple when other plugins are configured", async () => {
+      delete process.env.LANGFUSE_PUBLIC_KEY;
+      delete process.env.LANGFUSE_SECRET_KEY;
+
+      const hooks = await LangfusePlugin(mockPluginInput());
+
+      await hooks.config!({
+        experimental: { openTelemetry: true },
+        plugin: [
+          "opencode-gemini-auth@latest",
+          [
+            "opencode-plugin-langfuse@latest",
+            {
+              publicKey: "pk-config",
+              secretKey: "sk-config",
+            },
+          ],
+        ],
+      } as any);
+
+      expect(mockStart).toHaveBeenCalled();
+      expect(mockLangfuseSpanProcessor).toHaveBeenCalledWith({
+        publicKey: "pk-config",
+        secretKey: "sk-config",
+        baseUrl: "https://cloud.langfuse.com",
+        environment: "development",
       });
     });
   });
@@ -95,12 +178,12 @@ describe("LangfusePlugin", () => {
 
       await hooks.config!({ experimental: { openTelemetry: false } } as any);
 
+      expect(mockStart).not.toHaveBeenCalled();
       expect(mockLog).toHaveBeenCalledWith({
         body: {
           service: "langfuse-otel",
           level: "warn",
-          message:
-            "OpenTelemetry experimental feature is disabled in Opencode config - tracing disabled",
+          message: openTelemetryDisabledMessage,
         },
       });
     });
@@ -111,12 +194,12 @@ describe("LangfusePlugin", () => {
 
       await hooks.config!({} as any);
 
+      expect(mockStart).not.toHaveBeenCalled();
       expect(mockLog).toHaveBeenCalledWith({
         body: {
           service: "langfuse-otel",
           level: "warn",
-          message:
-            "OpenTelemetry experimental feature is disabled in Opencode config - tracing disabled",
+          message: openTelemetryDisabledMessage,
         },
       });
     });
@@ -128,7 +211,13 @@ describe("LangfusePlugin", () => {
 
       await hooks.config!({ experimental: { openTelemetry: true } } as any);
 
-      expect(mockLog).not.toHaveBeenCalled();
+      expect(mockLog).not.toHaveBeenCalledWith({
+        body: {
+          service: "langfuse-otel",
+          level: "warn",
+          message: openTelemetryDisabledMessage,
+        },
+      });
     });
   });
 
@@ -136,6 +225,8 @@ describe("LangfusePlugin", () => {
     it("flushes OTEL spans on session.idle", async () => {
       setupEnv();
       const hooks = await LangfusePlugin(mockPluginInput());
+      await hooks.config!({ experimental: { openTelemetry: true } } as any);
+      mockLog.mockClear();
 
       await hooks.event!({
         event: { type: "session.idle", properties: { sessionID: "sess-1" } },
@@ -154,6 +245,7 @@ describe("LangfusePlugin", () => {
     it("does not flush on other events", async () => {
       setupEnv();
       const hooks = await LangfusePlugin(mockPluginInput());
+      await hooks.config!({ experimental: { openTelemetry: true } } as any);
       mockForceFlush.mockClear();
 
       await hooks.event!({
@@ -172,7 +264,8 @@ describe("LangfusePlugin", () => {
       setupEnv();
       delete process.env.LANGFUSE_BASEURL;
 
-      await LangfusePlugin(mockPluginInput());
+      const hooks = await LangfusePlugin(mockPluginInput());
+      await hooks.config!({ experimental: { openTelemetry: true } } as any);
 
       expect(mockLog).toHaveBeenCalledWith({
         body: {
@@ -186,7 +279,8 @@ describe("LangfusePlugin", () => {
     it("uses custom baseUrl when provided", async () => {
       setupEnv({ LANGFUSE_BASEURL: "https://custom.langfuse.com" });
 
-      await LangfusePlugin(mockPluginInput());
+      const hooks = await LangfusePlugin(mockPluginInput());
+      await hooks.config!({ experimental: { openTelemetry: true } } as any);
 
       expect(mockLog).toHaveBeenCalledWith({
         body: {
@@ -194,6 +288,50 @@ describe("LangfusePlugin", () => {
           level: "info",
           message: "OTEL tracing initialized → https://custom.langfuse.com",
         },
+      });
+    });
+
+    it("prefers OpenCode plugin config over environment variables", async () => {
+      setupEnv({
+        LANGFUSE_BASEURL: "https://env.langfuse.com",
+        LANGFUSE_ENVIRONMENT: "env",
+      });
+
+      const hooks = await LangfusePlugin(mockPluginInput());
+
+      await hooks.config!(
+        configWithPluginOptions({
+          publicKey: "pk-config",
+          secretKey: "sk-config",
+          baseUrl: "https://config.langfuse.com",
+          environment: "production",
+        })
+      );
+
+      expect(mockLangfuseSpanProcessor).toHaveBeenCalledWith({
+        publicKey: "pk-config",
+        secretKey: "sk-config",
+        baseUrl: "https://config.langfuse.com",
+        environment: "production",
+      });
+    });
+
+    it("accepts baseURL as an alias for baseUrl", async () => {
+      setupEnv();
+
+      const hooks = await LangfusePlugin(mockPluginInput());
+
+      await hooks.config!(
+        configWithPluginOptions({
+          baseURL: "https://alias.langfuse.com",
+        })
+      );
+
+      expect(mockLangfuseSpanProcessor).toHaveBeenCalledWith({
+        publicKey: "pk-test",
+        secretKey: "sk-test",
+        baseUrl: "https://alias.langfuse.com",
+        environment: "development",
       });
     });
   });

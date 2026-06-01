@@ -45,7 +45,18 @@ Then configure in `.opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-plugin-langfuse"]
+  "experimental": {
+    "openTelemetry": true
+  },
+  "plugin": [
+    [
+      "opencode-plugin-langfuse",
+      {
+        "publicKey": "pk-lf-...",
+        "secretKey": "sk-lf-..."
+      }
+    ]
+  ]
 }
 ```
 
@@ -55,9 +66,28 @@ In your `.opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["file:../opencode-plugin-langfuse"]
+  "experimental": {
+    "openTelemetry": true
+  },
+  "plugin": [
+    [
+      "../opencode-plugin-langfuse/src",
+      {
+        "publicKey": "pk-lf-...",
+        "secretKey": "sk-lf-..."
+      }
+    ]
+  ]
 }
 ```
+
+Use `file:///absolute/path/to/opencode-plugin-langfuse/src/index.ts` when you
+prefer an absolute file URL. Do not use `file:/...`; OpenCode expects either a
+plain path or a `file://` URL.
+
+When combining this plugin with other plugins, the options object must stay
+inside the same two-item array as the Langfuse plugin specifier. A separate
+object entry in the `plugin` array is invalid OpenCode config.
 
 ## Code Style
 
