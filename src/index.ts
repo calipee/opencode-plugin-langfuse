@@ -116,6 +116,7 @@ const createLangfusePlugin = async (
           "warn",
           "OpenTelemetry experimental feature is disabled in Opencode config - tracing disabled"
         );
+
         return;
       }
 
@@ -127,13 +128,23 @@ const createLangfusePlugin = async (
     event: async ({ event }) => {
       if (event.type === "session.idle" && processor) {
         log("info", "Flushing OTEL spans before idle");
-        await processor.forceFlush(); // Flushes the trace to Langfuse
+        try {
+          await processor.forceFlush(); // Flushes the trace to Langfuse
+          log("info", "Flushed OTEL spans before idle");
+        } catch (error) {
+          log("error", `Failed to flush OTEL spans: ${String(error)}`);
+        }
       }
 
       if (event.type === "server.instance.disposed" && sdk) {
-        await sdk.shutdown(); // Flushes the trace to Langfuse
-        sdk = undefined;
-        processor = undefined;
+        try {
+          await sdk.shutdown(); // Flushes the trace to Langfuse
+        } catch (error) {
+          log("error", `Failed to shut down OTEL tracing: ${String(error)}`);
+        } finally {
+          sdk = undefined;
+          processor = undefined;
+        }
       }
     },
   };
